@@ -1,0 +1,327 @@
+/* REXX ***************************************************************
+**                                                                   **
+** ACSIND  - ISPF Edit Macro                                         **
+**           Tries to auto-indent your ACS routines.                 **
+**           Skips comment lines and assumes 3 spaces per indent.    **
+**           Formatting information:                                 **
+**            - Indents after DO, unindents after END                **
+**            - Right-justifies in-line comments                     **
+**            - Converts block comments to one-line comments         **
+**            - If comment and indented code do not fit on one line, **
+**              moves the comment to the line before                 **
+**            - Lines up FILTLIST lines based on where INCLUDE or    **
+**              EXCLUDE starts                                       **
+**            - Does NOT auto-indent after IF or WHEN                **
+**            - Auto-indents after SELECT                            **
+**            - Will not indent the line off the page.. Pulls line   **
+**              back to where it fits                                **
+**                                                                   **
+**         - For Best Formatting results, code the following         **
+**           - For IF and WHEN lines, either include the resulting   **
+**             statement on the same line, or use a DO. Examples:    **
+**             a.) IF(&DSN(2)=MYSTUFF*) THEN SET &DATACLAS='MINE'    **
+**             b.) IF(&DSN(2)=MYSTUFF*) THEN DO                      **
+**                 SET &DATACLAS='MINE'                              **
+**                 END                                               **
+**           - Keep in-line comments short, or put them on their own **
+**             line                                                  **
+** Author: Neal Bohling / bohling@us.ibm.com                         **
+** This is an as-is tool! No support is implied or guaranteed.       **
+** Feel free to make changes and update the tool. If you make        **
+** significant improvements, I'd like to see them!                   **
+**                                                                   **
+**********************************************************************/
+ADDRESS ISREDIT "MACRO PROCESS"
+ 
+/* GET THE LINE NUMBER OF THE FIRST AND LAST LINES */
+ADDRESS ISREDIT
+ "(FIRST) = LINENUM .ZF"
+ "(LAST)  = LINENUM .ZL"
+ "(LRECL)  = LRECL"
+ 
+address tso
+ 
+/* Set up some variables */
+indent_length = 3
+ 
+/* Program variables */
+indent = 0
+indentafter = 0
+contindent = 0
+iskeywordline = 0
+comment = ''
+hascomment = 0
+isblockcomment = 0
+movecomment = 0
+doCount.0 = 0
+curblock.0 = 0
+ 
+I=0+FIRST
+DO WHILE I <= LAST
+  ADDRESS ISREDIT "(MYLINE) = LINE "I
+  /* Process the line */
+ 
+  address tso
+  /* Iniitialize vars */
+  keyword = ''
+  iskeywordline = 0
+  indentafter = 0
+ 
+  /* Find any comments */
+  comment = ''
+  commentsix = pos('/*', myline)
+  commenteix = pos('*/', myline)
+  hascomment = 0
+  movecomment = 0
+ 
+  /* Skip blank lines */
+  if( length(strip(myline)) > 0 ) then do
+    /* Start handling by stripping the comment out of the line */
+    /* Block comments will be converted to single-line comments */
+    /* Start of block -- ignore just the comment part */
+    /* End   of block -- ignore whole line .. shouldn't be anything after */
+    /* Middle of block -- ignore whole line */
+    /* Not a block - start and end both there -- ignore just that range */
+    SELECT
+      /* Whole comment on one line */
+      when( commentsix > 0 & commenteix > 0 & commentsix < commenteix ) then do
+        hascomment = 1
+        isblockcomment = 0
+        movecomment = 1
+        end
+      /* Start of block comment */
+      when( commentsix > 0 & commenteix = 0 ) then do
+        hascomment = 1
+        commenteix = lastNonSpace(myline)
+        isblockcomment = 1
+        end
+      /* End of block comment */
+      when( isblockcomment=1 & commentsix = 0 & commenteix > 0 ) then do
+        hascomment = 1
+        isblockcomment = 0
+        commentsix = firstNonSpace(myline)
+        end
+      /* Middle block comment line */
+      when( isblockcomment=1 & commentsix = 0 & commenteix = 0 ) then do
+        hascomment = 1  /* it's a block comment */
+        commentsix = firstNonSpace(myline)
+        commenteix = lastNonSpace(myline)
+        end
+      otherwise
+        hascomment = 0
+    END
+ 
+    /* Extract comment from line */
+    if hascomment = 1 then do
+      comment = substr(myline,commentsix,commenteix-commentsix+2)
+      myline = overlay(' ',myline,commentsix,commenteix-commentsix+2,' ')
+      end
+    else comment = ''
+ 
+    /* remove extra space from comment and line */
+    myline = strip(myline)
+    comment = strip(comment)
+ 
+    /* Convert blocks to lines */
+    if( hascomment = 1 ) then do
+      if( pos('/*',comment) = 0 ) then do
+        if( length(comment) <= lrecl-2 ) then do
+          comment = '/*'||comment
+          commentsix = commentsix-2
+          if commentsix < 1 then commentsix=1
+        end
+        else comment = overlay('/*',comment,1)
+      end
+      if( pos('*/',comment) = 0 ) then do
+        if( length(comment) <= lrecl-2 ) then
+          comment = comment||'*/'
+        else comment = overlay('*/',comment,length(comment)-1)
+      end
+    end
+ 
+    /* One quick check to ensure that any in-line comments get moved */
+    if( hascomment = 1 & length(myline) > 0 ) then movecomment = 1
+    else movecomment = 0
+ 
+    /* Parse out and examine keywords */
+    /* Check if we have a new keyword or continuation of last */
+    spaceix1 = pos(' ',myline)
+    spaceix2 = pos('(',myline)
+    select
+      when( spaceix1 > 0 & spaceix2 > 0 ) then spaceix = min(spaceix1,spaceix2)
+      when( spaceix1 = 0 ) then spaceix = spaceix2
+      otherwise spaceix = spaceix1
+    end
+    if( spaceix = 0 ) then spaceix = length(myline)+1
+    keyword = substr(myline,1,spaceix-1)
+ 
+    /* Handle keywords and indent blocks */
+    SELECT
+      when( keyword = 'FILTLIST' ) then do
+        indent=0
+        indentafter = 0
+        iskeywordline = 1
+        contindent = pos('INCLUDE',myline)
+        if( contindent = 0 ) then  contindent = pos('EXCLUDE',myline)
+        if( contindent = 0 ) then  contindent = 10
+        contindent = contindent - 1
+        end
+      when( keyword = 'INCLUDE' | keyword = 'EXCLUDE' ) then do
+        iskeywordline = 0
+        end
+      when( keyword = 'SELECT' ) then do
+        iskeywordline = 1
+        indentafter = 1
+        contindent = 0
+        call addDo(i)
+        end
+      when( keyword = 'WHEN' | keyword = 'OTHERWISE' ) then do
+        iskeywordline = 1
+        contindent = indent + 2
+        end
+      when( keyword = 'PROC' ) then do
+        iskeywordline = 1
+        contindent = 0
+        /* Keep track of the need for an END */
+        call addDo(i)
+        end
+      when( keyword = 'IF' | keyword = 'THEN' | keyword = 'ELSE' ) then do
+        iskeywordline = 1
+        contindent = indent + 3
+        end
+      when( keyword = 'DO' ) then do
+        iskeywordline = 1
+        indentafter = 1
+        end
+      when( keyword = 'END' ) then do
+        /* Valid option, but don't need it to do anything */
+        iskeywordline = 1
+        contindent = 0
+        end
+      /* other options for keywords */
+      when( keyword = 'WRITE' | keyword = 'SET' | keyword = 'EXIT' ) then do
+        iskeywordline = 1
+        contindent = 2
+        end
+      otherwise do
+        iskeywordline = 0
+        end
+    END
+ 
+    /* Process DO/END indents and counts */
+    /* Moved out of SELECT since DO can be on same line as IF / WHEN */
+    if( pos('DO',myline) > 0 ) then do
+      /* check if it's already going to indent */
+      call addDo(i)
+      indentafter = 1
+      end
+    if( pos('END',myline) > 0 ) then do
+      indent = indent - 1
+      tmpDo = popDo()
+      if tmpDo = -1 then do
+        say "END without DO at line "i
+        end
+      end
+ 
+    if( length(myline) > 0 ) then do
+      /* Indent the line */
+      /* Add long-line indent */
+      if( iskeywordline = 0 ) then do
+        DO x=1 to contindent
+          myline = ' '||myline
+          end
+        end
+      else do
+        /* Add DO indent */
+        if indent > 0 then
+          DO x=1 to indent*indent_length
+            myline = ' '||myline
+            end
+        end
+    end
+ 
+    /* If the new indent and comment don't fit on one line */
+    /* Move it to the line above                           */
+    if( length( myline ) + length(comment) > lrecl ) then do
+      /* Insert a new line above current line and put comment there */
+      if( length(comment) > 0 ) then do
+        if( movecomment=1 ) then
+          newline = overlay( comment, ' ', lrecl-length(comment)+1 )
+        else newline = overlay( comment, ' ', commentsix )
+        ADDRESS ISREDIT "LINE_BEFORE "I" = (NEWLINE)"
+        i=i+1
+        last=last+1
+      end
+ 
+      /* If the line without comment is still too long */
+      if( length( myline ) > lrecl ) then do
+        /* Line is too long all by itself, so back of indent until it fits */
+        myline = strip(myline)
+        myline = overlay( myline, ' ', lrecl-length(myline)+1 )
+        end
+    end
+    /* If all is OK, then just write it out */
+    else do
+      if( hascomment=1 ) then do
+        if( movecomment=1 ) then
+          myline = overlay( comment, myline, lrecl-length(comment)+1 )
+        else myline = overlay( comment, myline, commentsix )
+      end
+    end
+ 
+    ADDRESS ISREDIT "LINE "I" = (MYLINE)"
+    indent = indent + indentafter
+    lastkeyword = keyword
+  END
+  I=I+1
+END
+ 
+/* Check if we had leftover DO statements */
+if doCount.0 /= 0 then do
+  if doCount.0 > 0 then do
+    do j=1 to doCount.0
+      say "DO/PROC/SELECT without END at line "doCount.j
+    end
+  end
+  else do
+    say "Something went wrong tracking DO and END pairs."
+    say "Check that each END corresponsds to a DO or PROC statement."
+  end
+end
+ 
+exit 0
+ 
+LastNonSpace: Procedure
+  arg data
+  found = 0
+  do i=length(data) to 1 by -1 until found>0
+    if substr(data,i,1) \= ' ' then found = i
+  end
+  return i
+ 
+FirstNonSpace: Procedure
+  arg data
+  found = 0
+  do i=1 to length(data) until found>0
+    if substr(data,i,1) \= ' ' then found = i
+  end
+  return i
+ 
+addDo: Procedure expose doCount.
+  arg newDo
+  doCount.0 = doCount.0 + 1
+  m=doCount.0
+  doCount.m = newDo
+  return
+ 
+getDo: Procedure expose doCount.
+  if( doCount.0 > 0 ) then
+    m=doCount.0
+    return doCount.m
+  else return -1
+ 
+popDo: Procedure expose doCount.
+  toRet = getDo()
+  if( doCount.0 > 0 ) then
+    doCount.0 = doCount.0 - 1
+  return toRet
