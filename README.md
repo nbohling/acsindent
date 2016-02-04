@@ -21,7 +21,7 @@ For Best Formatting results, code the following:
     a.) IF(&DSN(2)=MYSTUFF*) THEN SET &DATACLAS='MINE'
     b.) IF(&DSN(2)=MYSTUFF*) THEN DO
           SET &DATACLAS='MINE'
-        END
+        END 
 - Keep in-line comments short, or put them on their own line
 
 Author: Neal Bohling / bohling@us.ibm.com
